@@ -1,0 +1,59 @@
+name: publish
+
+# Trusted publishing (OIDC): this workflow exchanges a GitHub identity token for a
+# short-lived npm credential, so the repo holds no long-lived npm token.
+#
+# One-time setup on npmjs.com:
+#   package settings → Trusted publishing → GitHub Actions
+#   repository: ForForgot/dsh-usage-stats   workflow: publish.yml   environment: (empty)
+#
+# Release flow afterwards:
+#   1. bump "version" in package.json and update CHANGELOG.md
+#   2. git commit -am "release: x.y.z" && git tag vX.Y.Z && git push origin main --tags
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Install an npm that supports trusted publishing
+        run: npm install -g npm@^11.5.1
+
+      - name: Tag must match package.json
+        if: github.ref_type == 'tag'
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json v$version"
+            exit 1
+          fi
+
+      - name: Refuse to republish an existing version
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "::error::$name@$version is already on npm; bump the version first."
+            exit 1
+          fi
+
+      - name: Run the offline suites
+        run: npm test
+
+      - name: Publish
+        run: npm publish --access public
