@@ -1,6 +1,6 @@
 {
   "name": "@forforgot/dsh-usage-stats",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Usage dashboard for the DeepSeek Harness desktop Web UI: a full-size 使用统计 panel with lifetime cards, a one-year heatmap, a daily token trend (bars or monotone lines), a range-scoped model-share donut and token composition, a rolling call-detail table, workspace/task filters and CSV/JSON export, aggregated incrementally from live session events",
   "type": "module",
   "license": "MIT",

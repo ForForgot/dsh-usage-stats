@@ -2,6 +2,24 @@
 
 All notable changes to this package. Versions follow [semver](https://semver.org/).
 
+## 2.1.1 — 2026-10-30
+
+Security and repository hygiene. No behaviour change in the panel, no API change.
+
+- Test fixtures no longer carry a private gateway/provider fingerprint (`provider` /
+  `model` identifiers are neutral placeholders).
+- `.gitignore` now covers local credential material: `.npmrc`, `.env*`, `*.pem`,
+  `*.key`, `*.p12`, `*.pfx`, `credentials*`.
+- New `npm run check:secrets` (also part of `npm test` and both CI workflows): scans
+  tracked files for npm/GitHub tokens, private-key blocks, `_authToken` and
+  `secret`/`password` assignments, bearer headers, and absolute Windows user paths.
+- README documents the credential boundary: the plugin reads no credential file and no
+  API-key environment variable, and writes only `$DSH_HOME/usage-stats/*.json`.
+- Repository history was rewritten so a personal email address no longer appears in any
+  commit or tag (commit SHAs change; published artifacts are unaffected).
+- CI: `publish.yml` publishes from `v*` tags through npm trusted publishing (OIDC) into
+  the staged-publish queue, with tag/version and duplicate-version guards.
+
 ## 2.1.0 — 2026-10-30
 
 First release candidate for public distribution on DeepSeek Harness 0.2.1-rc.x.
