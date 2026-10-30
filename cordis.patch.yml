@@ -1,0 +1,9 @@
+# Usage-statistics bundle patch.
+#
+# Mounts this package as one Host Loader row. The Host half owns the
+# `GET /usage-stats/summary` route that folds the local Session logs and keeps
+# the rolling call window; the browser half is scanned from this package's
+# `dsh.client` declaration and renders the full-size Usage panel.
+- insert:
+    - id: usage-stats
+      name: '@forforgot/dsh-usage-stats'

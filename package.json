@@ -1,0 +1,77 @@
+{
+  "name": "@forforgot/dsh-usage-stats",
+  "version": "2.1.0",
+  "description": "Usage dashboard for the DeepSeek Harness desktop Web UI: a full-size 使用统计 panel with lifetime cards, a one-year heatmap, a daily token trend (bars or monotone lines), a range-scoped model-share donut and token composition, a rolling call-detail table, workspace/task filters and CSV/JSON export, aggregated incrementally from live session events",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "usage",
+    "statistics",
+    "tokens",
+    "dashboard"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node test/host.test.mjs && node test/calls.test.mjs && node test/scan.test.mjs && node test/range.test.mjs && node test/incremental.test.mjs && node test/consistency.test.mjs && node test/client.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-client-locale": ">=0.2.0-0 <0.3.0-0",
+    "@deepseek-ai/dsh-client-ui-layout": ">=0.2.0-0 <0.3.0-0",
+    "@deepseek-ai/dsh-client-ui-sidebar": ">=0.2.0-0 <0.3.0-0",
+    "@deepseek-ai/dsh-host-webserver": ">=0.2.0-0 <0.3.0-0",
+    "@deepseek-ai/dsh-session": ">=0.2.0-0 <0.3.0-0",
+    "@deepseek-ai/dsh-session-query": ">=0.2.0-0 <0.3.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-locale": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-layout": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-sidebar": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-query": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Usage Statistics",
+    "description": "Adds a full-size Usage panel beside the chat: lifetime token cards, a one-year activity heatmap, a stacked daily token chart, a model-share donut, token composition, workspace and task filters, and CSV/JSON export — folded from the local Session logs."
+  }
+}
