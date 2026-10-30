@@ -1,3 +1,25 @@
+# Local credentials and machine state must never be committed.
 node_modules/
 *.tgz
+
+# Test by-products
 test/client.probe.mjs
+
+# Credentials: npm/git tokens, env files, keys
+.npmrc
+.npmrc.*
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*
+.credentials*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+coverage/

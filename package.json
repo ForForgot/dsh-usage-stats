@@ -39,7 +39,8 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node test/host.test.mjs && node test/calls.test.mjs && node test/scan.test.mjs && node test/range.test.mjs && node test/incremental.test.mjs && node test/consistency.test.mjs && node test/client.test.mjs"
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "test": "node scripts/check-secrets.mjs && node test/host.test.mjs && node test/calls.test.mjs && node test/scan.test.mjs && node test/range.test.mjs && node test/incremental.test.mjs && node test/consistency.test.mjs && node test/client.test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-client-locale": ">=0.2.0-0 <0.3.0-0",

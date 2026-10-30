@@ -82,10 +82,10 @@ function emit(index, withReplay = true) {
         role: 'assistant',
         source: {
           kind: 'model',
-          provider: 'xtooltech-litellm',
-          model: 'xtool-if-sonnet-400',
+          provider: 'gateway-alpha',
+          model: 'route-model-a',
           ...(withReplay
-            ? { replayState: { blocks: [], response: { model: 'xtool-if-sonnet-400', responseModel: 'deepseek-flash' } } }
+            ? { replayState: { blocks: [], response: { model: 'route-model-a', responseModel: 'deepseek-flash' } } }
             : {}),
         },
       },
@@ -104,7 +104,7 @@ listener({ id: 'session-sub', header: { id: 'session-sub', cwd: 'E:\\work\\alpha
   data: {
     turn: 1,
     step: 900,
-    message: { role: 'assistant', source: { kind: 'model', provider: 'xtooltech-litellm', model: 'xtool-if-sonnet-400' } },
+    message: { role: 'assistant', source: { kind: 'model', provider: 'gateway-alpha', model: 'route-model-a' } },
     stream: [],
     usage: { inputTokens: 7, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 },
   },
@@ -131,7 +131,7 @@ check('upstream-reported model', payload.calls[1].actualModel, 'deepseek-flash')
 check('route-only call has no upstream name', payload.calls[0].actualModel, '');
 check('model source: route', payload.calls[0].modelSource, 'route');
 check('model source: upstream', payload.calls[1].modelSource, 'upstream');
-check('provider recorded', payload.calls[1].provider, 'xtooltech-litellm');
+check('provider recorded', payload.calls[1].provider, 'gateway-alpha');
 check('no effort field', 'effort' in payload.calls[0], false);
 check('no cwd leaked into the row', 'cwd' in payload.calls[0], false);
 check('call fields', Object.keys(payload.calls[0]).sort(), ['actualModel', 'cacheRead', 'cacheWrite', 'durationMs', 'input', 'model', 'modelSource', 'output', 'provider', 'time']);

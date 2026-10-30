@@ -588,10 +588,10 @@ const callRows = [];
 for (let index = 0; index < 37; index += 1) {
   callRows.push({
     time: Date.parse('2026-10-20T09:00:00+08:00') - index * 60000,
-    model: 'xtool-if-sonnet-400',
+    model: 'route-model-a',
     actualModel: index === 0 ? 'claude-sonnet-4-6' : '',
     modelSource: index === 0 ? 'upstream' : 'route',
-    provider: 'xtooltech-litellm',
+    provider: 'gateway-alpha',
     input: 1000 + index,
     output: 100 + index,
     cacheRead: 9000,
@@ -621,7 +621,7 @@ check('calls: header cells scoped', callsPanel.elements.filter((entry) => entry.
 const modelCells = callsPanel.elements.filter((entry) => entry.props.className === 'us-model');
 check('calls: model title names the source', modelCells.some((entry) => String(entry.props.title).includes('上游响应'))
   && modelCells.some((entry) => String(entry.props.title).includes('请求路由')), JSON.stringify(modelCells.slice(0, 3).map((entry) => entry.props.title)));
-check('calls: provider shown', callsPanel.text.includes('xtooltech-litellm'), callsPanel.text.join('|').slice(0, 400));
+check('calls: provider shown', callsPanel.text.includes('gateway-alpha'), callsPanel.text.join('|').slice(0, 400));
 check('calls: no effort column', !callsPanel.text.includes('思考程度'), callsPanel.text.join('|').slice(0, 300));
 check('calls: upstream model shown', callsPanel.text.includes('claude-sonnet-4-6'), callsPanel.text.join('|').slice(0, 400));
 check('calls: arrow between names', callsPanel.elements.some((entry) => entry.props.className === 'us-arrow' && entry.props.children === ' → '));

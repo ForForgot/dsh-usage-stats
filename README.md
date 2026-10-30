@@ -18,6 +18,19 @@ DeepSeek Harness 桌面版（Web UI）的用量仪表盘插件：侧边栏多一
 - 分叉会话通过 `inheritedEventCount` 跳过继承前缀，父子不重复计入。
 - 全部在本机计算，配置与索引文件只写在本机 `$DSH_HOME`，不上传任何服务器。
 
+## 凭据与隐私
+
+- 插件**不读取任何凭据**：不碰 `~/.dsh/.credentials.yaml`，不读取 `ANTHROPIC_*` /
+  `OPENAI_*` / `XTOOLTECH_*` 之类的 API Key 环境变量；它只用 `DSH_HOME` 一个变量定位状态目录，
+  其余信息全部来自 `sessionQuery` 与 `session/event`。
+- 写出的只有 `$DSH_HOME/usage-stats/` 两个 JSON：`folds.json`（每会话聚合）与
+  `recent-calls.json`（最近 100 次调用）。写入使用 0600、目录 0700（POSIX 生效；Windows 上
+  权限由用户配置文件目录继承的 ACL 决定，即只有你本人可读）。
+- HTTP 面只有一条只读路由，且位于宿主 `connection.requestRejection` 之后（未认证请求 401）。
+- 仓库自带 `npm run check:secrets`（CI 与 `npm test` 都会跑），扫描被跟踪文件里的 npm/GitHub
+  token、私钥块、`_authToken` 赋值、`*_key/secret/password` 赋值，以及**绝对 Windows 用户路径**
+  （防止把本机用户名带进公开仓库）。`.gitignore` 已排除 `.npmrc`、`.env*`、`*.pem`、`*.key` 等。
+
 ## 结构
 
 | 位置 | 作用 |
