@@ -1,0 +1,8 @@
+# Keep the working tree byte-identical on every platform: the test suites read
+# source files as text and inject a marker, so a CRLF checkout must not happen.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.jpg binary
+*.tgz binary

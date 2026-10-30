@@ -7,7 +7,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const source = readFileSync(join(here, '..', 'client.js'), 'utf8');
+// Normalise line endings: a Windows checkout with core.autocrlf=true would
+// otherwise carry CRLF and the marker injection below would silently miss.
+const source = readFileSync(join(here, '..', 'client.js'), 'utf8').replace(/\r\n/g, '\n');
 const marker = '    return {\n      name: NS,';
 if (!source.includes(marker)) throw new Error('probe injection point not found');
 const probed = source
