@@ -1366,6 +1366,11 @@ export function apply(ctx) {
     // inherit "everything is up to date" from the enable that just ended.
     folds.logic = 0;
     folds.lastFullAt = 0;
+    // The flush above already wrote everything worth keeping. Should this cleanup
+    // ever run before it, a stale `dirty` would make the later flush persist an
+    // empty `cells` map over the real file; dropping the flag loses at most the
+    // last couple of seconds, which a re-read rebuilds.
+    folds.dirty = false;
     ring.stepStarts.clear();
     // Also drop the window itself: `loadRing` must repopulate it from disk, never
     // inherit rows from the previous enable.
