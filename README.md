@@ -35,7 +35,7 @@ DeepSeek Harness 桌面版（Web UI）的用量仪表盘插件：侧边栏多一
 
 | 位置 | 作用 |
 |---|---|
-| `index.js`（宿主半） | 注册 `GET /usage-stats/summary`：增量聚合（live 事件累加 + 一次性补扫 + `folds.json` 持久化），实时调用窗口，导出与筛选选项 |
+| `index.js`（宿主半） | 注册 `GET /usage-stats/summary`：增量聚合（live 事件累加 + 按 revision 门控的补扫 + `folds.json` 持久化），实时调用窗口，导出与筛选选项 |
 | `client.js`（浏览器半） | 在 `sidebar.panellist` 加导航图标、在 `main` 注册 `usage-stats` 整页面板并渲染看板 |
 | `cordis.patch.yml` | 装配一行宿主入口；浏览器半由 `dsh.client` 声明被发现 |
 
@@ -75,12 +75,23 @@ dsh plugin --profile desktop add "<此目录>" -w
   `foldSession` 共用同一段逻辑，连"没有 usage 的消息也计入 messages"这种细节都共用）。因此：
   - 运行期间**没有任何定时全量扫描**（旧版本每 5 分钟一次，已移除）；
   - 打开面板读的是内存里的折叠结果，**不读日志**；单次请求成本是
-    `O(会话数 + 活跃天数 × 模型数)`，不是常数（当前 11 个会话实测约 2 ms）；
-  - **进程重启后第一次会完整校验一遍**（逐个 `readSession`），这是当前唯一的一次全量读取：
-    重启后 `scanned` 是空的，且 `SessionRecord` 没有变更戳可判断"关闭期间是否变过"；
+    `O(会话数 + 活跃天数 × 模型数)`，不是常数（当前 24 个会话实测约 2 ms）；
+  - **进程重启后不再重读没变过的日志**：每次启动先用 `sessionPersistence.list()` 取一份
+    每个会话的 revision（目录元数据 + 日志的头部帧，不解压正文），与 `folds.json` 里存着的
+    那份比较，一致就跳过。实测本机 24 个会话：完整读一遍（137 MB 明文、38k 事件）约 2.3 秒，
+    元数据扫描约 4 毫秒；
+  - 判定是**默认不信任**：只有 `location.kind === 'jsonl'`、且 revision 与 sizeBytes 都齐全才
+    允许跳过，任一项不符就照旧读取。所以换后端、旧版宿主、没有该服务时，行为与 2.1.x 完全一致；
+  - 正在运行的会话（`live`）文件可能落后于内存，改用 `observeSession()` 的 `cursor` 判断：
+    折叠游标已到日志末尾就跳过（该调用不拷贝事件、不读磁盘）；
+  - 兜底：`?refresh=1`、折叠语义版本变化（见 `FOLD_LOGIC_VERSION`）、以及**距上次全量已超 7 天**
+    时，强制完整重折一次。revision 跨进程可比是 JSONL 后端实现上的事实、不是服务契约的承诺，
+    这 7 天就是为此准备的；
   - 运行期间新出现的会话只补扫它自己（多批并行读取，`BATCH_SIZE = 4`）；
   - 已折叠的结果镜像到 `$DSH_HOME/usage-stats/folds.json`（约 1 KB/会话，防抖 2 秒、
-    卸载与退出时 flush），所以**重启后第一次打开立刻就有数字**，校验在后台完成后再校正。
+    卸载与退出时 flush），所以**重启后第一次打开立刻就有数字**。
+    **revision 只与它对应的那次折叠一起写**：读取失败或跳过的会话不会带上新的 revision，
+    否则下一次启动会误以为"这段日志已经折过了"而永久漏记。
   - 折叠期间到达的实时事件不会丢也不会重复：该会话整个"正在读 → 结果发布"窗口都标记为
     folding，事件先按会话缓冲（`tail`），在同步的提交阶段（`commitFold`）按 `event.seq`
     重放；比快照新的内存结果也不会被旧快照覆盖。批量读取时慢会话不会拖累快会话的事件。
@@ -149,15 +160,14 @@ dsh plugin --profile desktop add "<此目录>" -w
 
 ## 已知限制与后续计划
 
-- **启动后仍有一次补扫**：`sessionQuery.listSessions()` 返回的 `SessionRecord` 只有
-  `{ header, live, persisted, formatStatus }`，**没有 lastSeq / eventCount / mtime 之类的变更戳**，
-  所以进程重启后无法用公开 API 判断"这个会话在关闭期间有没有长出新事件"，只能把没折过的会话
-  各读一次。收益已经在的：**运行期间零定时扫描**；启动那一次会完整校验全部会话，
-  **运行期间新出现的会话只补扫它自己**。
-  - 想连这一次也省掉，需要按日志文件的 size+mtime 判断（依赖 `$DSH_HOME/sessions/**` 的私有布局，
-    布局一变就退化成全量扫描），或改用 DSH 的投影缓存
-    （`sessionProjectionCache.cachedSnapshot(record.header, ['usage'])`，需要注册 `usage` 投影，
-    且必须在真实环境验证 fork 前缀不被重复计入）。
+- **revision 的跨进程可比性不是契约**：`sessionPersistence` 的文档只承诺"同一服务实例内的两个
+  revision 可以比较"。JSONL 后端把 revision 取成文件的 `dev:ino:size:mtimeNs:ctimeNs`，
+  所以重启后仍然可比；但这属于实现细节，换后端就可能不再成立。因此：只有 `kind === 'jsonl'`
+  且字段齐全时才允许跳过，另有 **7 天一次的全量重折**兜底。最坏情况是某个后端的数字最多滞后一周，
+  不会永久停在错误的数上。改折叠语义（`applyEventToCell` / `foldSession`）时**必须同时给
+  `FOLD_LOGIC_VERSION` 加一**，否则旧语义算出的折叠会被当成有效缓存继续沿用。
+- **未物化的会话不会被跳过**：新建但还没落盘的会话，`stat` 不返回 `location` / `sizeBytes`，
+  取不到可信 revision，于是照常读取——这是有意的，读一次总比漏一次好。
 - 增量折叠成立的前提是"该会话至少被完整折过一次"：未折过的会话若先收到实时事件，只登记为
   `pending`，等下一次请求补扫，不会用部分事件算出偏低的数字。`pending` 只在本轮 `listSessions`
   确实覆盖到它时才清除，所以"扫描期间新建的会话"不会被丢掉。**残留情况**：某个 `pending` 连续
@@ -167,21 +177,22 @@ dsh plugin --profile desktop add "<此目录>" -w
   冷却后重试），单个 `readSession` 超时按"读不出来"处理（保留旧折叠、计入 `unreadable` 重试），
   所以 persistence 卡住不会让进度条永远转。
 - 明细窗口与折叠镜像都是**全局文件**而非按 profile 隔离，多 profile 会共用。
-- 支持规模：折叠结果约占 1 KB/会话；日常请求**不读日志**，但 `buildSnapshot` 每次仍会遍历
-  全部折叠结果与活跃天/模型（`O(会话 + 天 × 模型)`，当前 11 个会话约 2 ms），`folds.json`
-  也是整体重写（7 KB/11 会话；上千会话时约 1 MB/2 秒，需要的话可改成分片写）。
+- 支持规模：折叠结果约占 760 B/会话（24 个会话的 `folds.json` 为 18 KB）；日常请求**不读日志**，
+  但 `buildSnapshot` 每次仍会遍历全部折叠结果与活跃天/模型（`O(会话 + 天 × 模型)`，当前 24 个会话
+  约 2 ms），`folds.json` 也是整体重写（上千会话时约 1 MB/2 秒，需要的话可改成分片写）。
 
 ## 自检
 
-七个套件都不依赖浏览器，也不需要安装任何依赖；在仓库根目录直接跑：
+八个套件都不依赖浏览器，也不需要安装任何依赖；在仓库根目录直接跑：
 
 ```powershell
-npm test                        # 依次跑下面七个
+npm test                        # 依次跑下面八个
 node test\host.test.mjs         # 宿主半：折叠口径、分叉/子任务分类、筛选、路由
 node test\calls.test.mjs        # 调用明细：窗口上限、最新在前、耗时、上游模型、scope 过滤、重启恢复
 node test\scan.test.mjs         # 扫描生命周期：失败上报、不伪装成刷新、冷却重试、卸载清空
 node test\range.test.mjs        # 区间口径：环形图与构成跟随 7/30 天，卡片保持累计
 node test\incremental.test.mjs  # 增量折叠：实时事件不再重读日志，且结果与整段折叠逐字段相等
+node test\gate.test.mjs         # revision 门控：未变不重读、变更/尺寸/后端类型/失败读/语义版本/7 天兜底/旧文件升级
 node test\consistency.test.mjs  # 合并一致性：无 usage 消息、读取中/批量快慢窗口的 live 事件、pending 保留、force 重读、空语料
 node test\client.test.mjs       # 浏览器半：渲染冒烟、格式化、CSV、气泡几何、中英文案完整性
 ```

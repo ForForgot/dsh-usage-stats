@@ -149,7 +149,9 @@ const foldsFile = join(homes.live, 'usage-stats', 'folds.json');
 check('folds are persisted on unload', existsSync(foldsFile), existsSync(foldsFile));
 const saved = JSON.parse(readFileSync(foldsFile, 'utf8'));
 const foldsBytes = readFileSync(foldsFile).length;
-check('folds file has a version', saved.version === 1, saved.version);
+check('folds file has a version', saved.version === 2, saved.version);
+check('folds file records its fold semantics', saved.logic === 1, saved.logic);
+check('folds file records a full pass', typeof saved.lastFullAt === 'number' && saved.lastFullAt > 0, saved.lastFullAt);
 check('folds file keeps the folded cell', saved.sessions['session-1'] && saved.sessions['session-1'].cell.tokens === 115, Object.keys(saved.sessions));
 
 const warm = harness({ events: [...firstTwo, third], failReads: true });

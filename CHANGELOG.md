@@ -2,6 +2,40 @@
 
 All notable changes to this package. Versions follow [semver](https://semver.org/).
 
+## 2.2.0 — 2026-11-16
+
+A restart no longer re-reads session logs that did not change. Requires DSH
+`0.2.2-rc.3` or newer for the saving; older hosts keep the previous behaviour.
+
+- **Revision-gated folds.** On each start the host asks `sessionPersistence.list()`
+  for one revision per session (directory metadata plus each log's header frame —
+  no body decompression) and compares it with the revision stored next to the
+  saved fold. Unchanged → skipped. Measured on a 24-session corpus: 2.3 s of
+  reading (137 MB plaintext, 38k events) against 4 ms of metadata.
+- **Live sessions use their cursor instead.** A running session's artifact may
+  trail its memory, so a file revision says nothing about it; `observeSession()`
+  answers from `session.seq` without copying the event array or touching disk.
+- **Every uncertainty reads.** A skip needs `location.kind === 'jsonl'` plus a
+  complete revision and `sizeBytes` on both sides. A different backend, an older
+  host, a missing service, a failed or timed-out read, or a malformed stamp all
+  fall back to reading, so the worst case is the old cost rather than a frozen
+  number.
+- **Stamps travel with their fold.** A revision is recorded only beside a fold
+  that actually happened; a session that was skipped or failed to read never
+  inherits one, because that would tell the next start a log state had been
+  folded when it had not.
+- **`FOLD_LOGIC_VERSION`.** Changing what a fold means now distrusts every stored
+  revision and forces one full re-fold, instead of carrying numbers the current
+  code would never produce.
+- **Weekly full pass.** Revision comparability across processes is a property of
+  the JSONL backend, not a promise of the service contract; after seven days
+  without one, the next start re-reads everything.
+- **`folds.json` version 2**: adds `logic`, `lastFullAt`, and a per-session
+  `rev` / `size` / `kind`. A version 1 file is upgraded in place (its cells still
+  warm the first paint, and every session is read once to establish a stamp).
+  Downgrading is safe: a 2.1.x build ignores the new file and re-folds.
+- New `test/gate.test.mjs` (11 scenarios); `npm test` now runs eight suites.
+
 ## 2.1.1 — 2026-10-30
 
 Security and repository hygiene. No behaviour change in the panel, no API change.

@@ -68,13 +68,43 @@ const CALLS_FILE_VERSION = 1;
 const FOLDS_FILE = 'usage-stats/folds.json';
 
 /** Schema of that file, same contract as the call window. */
-const FOLDS_FILE_VERSION = 1;
+const FOLDS_FILE_VERSION = 2;
+
+/**
+ * Version of the fold *semantics*, not of the file shape.
+ *
+ * `applyEventToCell` / `foldSession` decide what a fold means. When that changes,
+ * a fold written by the previous build carries numbers this build would never
+ * produce, so bumping this distrusts every stored revision stamp and forces one
+ * full re-fold. The cells are kept for the first paint; they are replaced as the
+ * pass reaches each session.
+ */
+const FOLD_LOGIC_VERSION = 1;
+
+/**
+ * Longest a stored fold is trusted without one full re-read.
+ *
+ * A skip compares a stored stamp against the persistence backend's current one.
+ * The JSONL backend derives that stamp from the artifact's file identity, which
+ * happens to survive a restart, but the service contract only promises that two
+ * stamps from the *same* instance are comparable. This periodic full pass is the
+ * backstop if a backend ever breaks that: the cost is one slow first request a
+ * week, and the alternative — trusting it forever — is a number that stays wrong.
+ */
+const FULL_FOLD_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** How long a fold change waits before it is written out. */
 const FOLDS_FLUSH_MS = 2000;
 
 /** Per-session folded usage, keyed by Session id. */
 const cells = new Map();
+
+/**
+ * The persistence revision each stored fold was folded against, keyed by Session
+ * id. An id here without a matching entry in `cells` is meaningless, and an id
+ * with a stamp always means "this exact fold covers that exact log state".
+ */
+const stamps = new Map();
 
 /** Sessions whose log was folded end to end in this process (skip on later scans). */
 const scanned = new Set();
@@ -83,7 +113,15 @@ const scanned = new Set();
 const pending = new Set();
 
 /** Persistence bookkeeping for `cells`. */
-const folds = { loaded: false, dirty: false, flushTimer: null };
+const folds = {
+  loaded: false,
+  dirty: false,
+  flushTimer: null,
+  /** Fold semantics of the stored cells; anything but `FOLD_LOGIC_VERSION` re-folds. */
+  logic: 0,
+  /** When the last full pass completed; zero forces one on the next start. */
+  lastFullAt: 0,
+};
 
 /**
  * The rolling call window: every committed assistant message the Host sees
@@ -370,20 +408,47 @@ function hydrateCell(raw) {
   return cell;
 }
 
+/**
+ * The revision recorded beside a stored fold.
+ *
+ * Reading is deliberately total: a missing or malformed field means "no stamp",
+ * which makes the scan read that log, which is always correct.
+ */
+function stampFromEntry(entry) {
+  if (!entry || typeof entry !== 'object') return undefined;
+  if (typeof entry.rev !== 'string' || entry.rev === '') return undefined;
+  if (entry.kind !== 'jsonl') return undefined;
+  const size = entry.size;
+  if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) return undefined;
+  return { rev: entry.rev, size, kind: 'jsonl' };
+}
+
 /** Restore the persisted folds, once per process, so the first paint is warm. */
 function loadFolds() {
   if (folds.loaded) return;
   folds.loaded = true;
   try {
     const parsed = JSON.parse(readFileSync(stateFile(FOLDS_FILE), 'utf8'));
-    if (!parsed || typeof parsed !== 'object' || parsed.version !== FOLDS_FILE_VERSION) return;
+    if (!parsed || typeof parsed !== 'object') return;
+    // Version 1 carries no stamps: its cells are still worth the first paint, and
+    // every session is read once to establish one.
+    if (parsed.version !== 1 && parsed.version !== FOLDS_FILE_VERSION) return;
     const sessions = parsed.sessions && typeof parsed.sessions === 'object' ? parsed.sessions : {};
     for (const id of Object.keys(sessions)) {
       const entry = sessions[id];
       const cell = entry && entry.cell;
       if (!cell || typeof cell !== 'object' || typeof cell.tokens !== 'number') continue;
       cells.set(id, hydrateCell(cell));
+      const stamp = stampFromEntry(entry);
+      if (stamp !== undefined) stamps.set(id, stamp);
     }
+    const logic = parsed.logic;
+    folds.logic = typeof logic === 'number' && Number.isFinite(logic) ? logic : 0;
+    // A fold from another build does not mean what this build means. The stamps
+    // describe logs, not semantics, so dropping them is what forces the re-fold.
+    if (folds.logic !== FOLD_LOGIC_VERSION) stamps.clear();
+    const lastFullAt = parsed.lastFullAt;
+    folds.lastFullAt = typeof lastFullAt === 'number' && Number.isFinite(lastFullAt) ? lastFullAt : 0;
   } catch {
     // First run, an unreadable file, or an older shape: start empty.
   }
@@ -394,8 +459,26 @@ function persistFolds() {
   if (!folds.dirty) return;
   folds.dirty = false;
   const sessions = {};
-  for (const [id, cell] of cells) sessions[id] = { seq: cell.seq || 0, cell };
-  writeJsonAtomic(stateFile(FOLDS_FILE), { version: FOLDS_FILE_VERSION, sessions });
+  for (const [id, cell] of cells) {
+    const entry = { seq: cell.seq || 0, cell };
+    const stamp = stamps.get(id);
+    // The stamp travels only with the fold it was recorded against. Writing one
+    // for a session that was skipped or failed to read would tell the next run
+    // that a fold covers a log state it never saw — the one way this file can
+    // lose usage silently.
+    if (stamp !== undefined) {
+      entry.rev = stamp.rev;
+      entry.size = stamp.size;
+      entry.kind = stamp.kind;
+    }
+    sessions[id] = entry;
+  }
+  writeJsonAtomic(stateFile(FOLDS_FILE), {
+    version: FOLDS_FILE_VERSION,
+    logic: folds.logic,
+    lastFullAt: folds.lastFullAt,
+    sessions,
+  });
 }
 
 /** Debounced persist so a burst of live events writes once. */
@@ -952,6 +1035,117 @@ function buildSnapshot(query) {
  * O(new or unseen sessions) instead of O(corpus); `force` (the refresh button)
  * deliberately re-reads everything.
  */
+/**
+ * A persistence snapshot's revision, when this build is willing to trust it.
+ *
+ * Only a backend that derives the revision from durable file identity produces a
+ * value that still means something after a restart, and only the JSONL backend is
+ * known to do that. Anything else — another backend, a future one, an opaque
+ * counter — yields no stamp, so the log is read. Skipping is never the default.
+ */
+function stampOfSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return undefined;
+  const location = snapshot.location;
+  if (!location || location.kind !== 'jsonl') return undefined;
+  const revision = snapshot.revision;
+  if (typeof revision !== 'string' || revision === '') return undefined;
+  const size = snapshot.sizeBytes;
+  if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) return undefined;
+  return { rev: revision, size, kind: 'jsonl' };
+}
+
+/**
+ * Ask the persistence backend for one revision per stored Session.
+ *
+ * `list` reads directory metadata plus each log's *header frame*, never its body,
+ * so this stays cheap beside a fold (milliseconds against seconds on a real
+ * corpus). Every failure — service absent, an older DSH, a timeout, a surprising
+ * shape — yields an empty map, and the pass then reads everything exactly as it
+ * did before stamps existed. `sessionPersistence` is deliberately not in `inject`:
+ * a hard dependency would deactivate the whole plugin on a host without it.
+ */
+async function persistenceStamps(ctx) {
+  const found = new Map();
+  let persistence;
+  try {
+    persistence = typeof ctx.get === 'function' ? ctx.get('sessionPersistence') : undefined;
+  } catch {
+    return found;
+  }
+  if (!persistence || typeof persistence.list !== 'function') return found;
+  let snapshots;
+  try {
+    snapshots = await withTimeout(persistence.list(), READ_TIMEOUT_MS);
+  } catch {
+    return found;
+  }
+  if (!Array.isArray(snapshots)) return found;
+  for (const snapshot of snapshots) {
+    const stamp = stampOfSnapshot(snapshot);
+    if (stamp === undefined) continue;
+    const header = snapshot.header;
+    const id = header && typeof header.id === 'string' ? header.id : '';
+    if (id !== '') found.set(id, stamp);
+  }
+  return found;
+}
+
+/**
+ * The high-water seq of a live Session's in-memory log, or undefined.
+ *
+ * A live Session's artifact may trail its memory (appends are best-effort and
+ * flushed in batches), so a file stamp says nothing about it; its own cursor
+ * does. `observeSession` answers for a live Session straight from `session.seq`,
+ * and its `events` array is a lazy getter this never touches, so the call costs
+ * no log copy and no disk read. Undefined means "cannot tell cheaply, so read".
+ */
+async function liveCursorOf(ctx, id) {
+  const query = ctx.sessionQuery;
+  if (!query || typeof query.observeSession !== 'function') return undefined;
+  let observation;
+  try {
+    observation = await withTimeout(query.observeSession(id, { projectionMode: 'none' }), READ_TIMEOUT_MS);
+    if (!observation || observation.source !== 'live') return undefined;
+    const cursor = observation.cursor;
+    if (typeof cursor !== 'number' || !Number.isFinite(cursor)) return undefined;
+    return cursor;
+  } catch {
+    return undefined;
+  } finally {
+    try {
+      if (observation && typeof observation[Symbol.dispose] === 'function') observation[Symbol.dispose]();
+    } catch {
+      // Releasing a lease must never fail a scan.
+    }
+  }
+}
+
+/**
+ * Whether a stored fold already covers this Session's log.
+ *
+ * Every clause defaults to "read": a stamp on both sides, an identical backend
+ * kind, an identical revision and size, and a cell to keep. A change in any of
+ * them costs a re-read rather than a number that silently stops moving.
+ */
+function coldSkipAllowed(id, current) {
+  const known = stamps.get(id);
+  if (known === undefined || current === undefined) return false;
+  if (known.kind !== current.kind) return false;
+  if (known.rev !== current.rev) return false;
+  if (known.size !== current.size) return false;
+  return cells.has(id);
+}
+
+/**
+ * Start one background fold pass.
+ *
+ * Sessions already folded end to end in this process are skipped: their usage
+ * arrives through `session/event` from now on. Across a restart the saved
+ * revisions decide instead — a session whose log did not change costs one
+ * comparison — so a normal start no longer reads the whole corpus. `force` (the
+ * refresh button), a fold-logic change, and the weekly backstop re-read
+ * everything.
+ */
 function startScan(ctx, options = {}) {
   const force = options.force === true;
   generation += 1;
@@ -965,33 +1159,65 @@ function startScan(ctx, options = {}) {
     try {
       const records = await withTimeout(ctx.sessionQuery.listSessions(), READ_TIMEOUT_MS);
       if (mine !== generation) return;
-      const ids = [];
+      const list = [];
       const seen = new Set();
       for (const record of records) {
-        const id = record && record.header ? record.header.id : undefined;
-        if (typeof id === 'string' && !seen.has(id)) {
-          seen.add(id);
-          ids.push(id);
-        }
+        const header = record && record.header;
+        const id = header ? header.id : undefined;
+        if (typeof id !== 'string' || seen.has(id)) continue;
+        seen.add(id);
+        list.push({ id, live: record.live === true });
       }
       for (const id of [...cells.keys()]) {
         if (!seen.has(id)) {
           cells.delete(id);
+          stamps.delete(id);
           scanned.delete(id);
           pending.delete(id);
           pendingMisses.delete(id);
         }
       }
-      // A forced pass re-reads everything, so `?refresh=1` really is a full re-fold
-      // and can recover from state a bug left behind.
-      const todo = force ? ids : ids.filter((id) => !scanned.has(id));
+      // A full pass re-reads every log, so `?refresh=1` really is a full re-fold,
+      // a fold-semantics change cannot strand old numbers, and a backend whose
+      // revisions turn out not to survive a restart costs one slow start a week.
+      const stale = folds.lastFullAt === 0 || Date.now() - folds.lastFullAt > FULL_FOLD_INTERVAL_MS;
+      const fullPass = force || stale || folds.logic !== FOLD_LOGIC_VERSION;
+      // Stamps describe the log as it is *before* any read below. Pairing a
+      // pre-read revision with a post-read fold only ever over-invalidates: a log
+      // that grew meanwhile gets a different revision next time and is re-read.
+      // The reverse order would let a fold claim a state it never saw.
+      const current = await persistenceStamps(ctx);
+      if (mine !== generation) return;
+      const todo = [];
+      for (const item of list) {
+        if (!fullPass && scanned.has(item.id)) continue;
+        todo.push(item);
+      }
       state.total = todo.length;
       let unreadable = 0;
       for (let offset = 0; offset < todo.length; offset += BATCH_SIZE) {
         if (mine !== generation) return;
         const slice = todo.slice(offset, offset + BATCH_SIZE);
+        // Decide first: a skip costs no read, so it must not enter `folding` or
+        // buffer live events. A wrong "read" only wastes work; a wrong "skip"
+        // freezes a number, so every uncertainty resolves to reading.
+        const skipped = await Promise.all(slice.map(async (item) => {
+          if (fullPass) return false;
+          if (item.live) {
+            const cursor = await liveCursorOf(ctx, item.id);
+            const cell = cells.get(item.id);
+            return cursor !== undefined && cell !== undefined && cell.seq === cursor;
+          }
+          return coldSkipAllowed(item.id, current.get(item.id));
+        }));
+        if (mine !== generation) return;
+        const toRead = [];
+        for (let index = 0; index < slice.length; index += 1) {
+          if (skipped[index]) scanned.add(slice[index].id);
+          else toRead.push(slice[index].id);
+        }
         // The read half stays pure: no `folding`/`tail` bookkeeping, no commit.
-        const folded = await Promise.all(slice.map(async (id) => {
+        const folded = await Promise.all(toRead.map(async (id) => {
           folding.add(id);
           try {
             return [id, foldSession(await withTimeout(ctx.sessionQuery.readSession(id), READ_TIMEOUT_MS)), true];
@@ -1007,9 +1233,14 @@ function startScan(ctx, options = {}) {
         // finishing and this batch committing (it would be overwritten by the fold).
         for (const [id, cell, complete] of folded) {
           commitFold(id, cell);
-          // A failed read stays unscanned so a later pass retries it.
-          if (complete) scanned.add(id);
-          else unreadable += 1;
+          if (complete) {
+            scanned.add(id);
+            // Only a fold that really happened may carry a stamp forward.
+            const stamp = current.get(id);
+            if (stamp !== undefined) stamps.set(id, stamp);
+          } else {
+            unreadable += 1;
+          }
         }
         state.done = Math.min(todo.length, offset + slice.length);
       }
@@ -1030,6 +1261,14 @@ function startScan(ctx, options = {}) {
         }
       }
       state.unreadable = unreadable;
+      // A full pass that read every log is what lets the next start trust these
+      // stamps again. A partial one keeps both the old logic marker and the old
+      // timestamp, so the following start repeats the work instead of inheriting
+      // a claim it did not earn.
+      if (fullPass && unreadable === 0) {
+        folds.logic = FOLD_LOGIC_VERSION;
+        folds.lastFullAt = Date.now();
+      }
       ok = true;
     } catch (cause) {
       // Any unexpected failure must still release the scanning flag, otherwise
@@ -1116,12 +1355,17 @@ export function apply(ctx) {
     state.unreadable = 0;
     state.error = null;
     cells.clear();
+    stamps.clear();
     scanned.clear();
     pending.clear();
     pendingMisses.clear();
     folding.clear();
     tail.clear();
     folds.loaded = false;
+    // Forget what the file claimed: a re-enable reloads it from disk, and must not
+    // inherit "everything is up to date" from the enable that just ended.
+    folds.logic = 0;
+    folds.lastFullAt = 0;
     ring.stepStarts.clear();
     // Also drop the window itself: `loadRing` must repopulate it from disk, never
     // inherit rows from the previous enable.
