@@ -2,6 +2,29 @@
 
 All notable changes to this package. Versions follow [semver](https://semver.org/).
 
+## 2.2.1 — 2026-11-17
+
+Fixes the panel showing `读取用量数据失败：Failed to fetch` after it had been left
+alone for a while.
+
+- **A dead pooled connection is retried once.** The Host's HTTP server keeps
+  Node's default five-second keep-alive timeout while the browser parks idle
+  connections far longer, so the first request after coming back to the panel
+  could reuse a socket the server had already closed — reported by the browser as
+  `TypeError: Failed to fetch`, without the request ever reaching the Host. The
+  client now retries once after 250 ms, which turns that race into a blip.
+- **An HTTP status is never retried.** A `401` or `500` is a real answer and is
+  surfaced immediately, so a genuine failure still reads as `HTTP 500` rather than
+  being masked by a retry.
+- **A failed request retries in 3 s, not 60 s.** The idle poll stays at a minute,
+  but an error now recovers on its own instead of leaving the panel broken until
+  the next idle tick.
+- **The route is requested as an absolute path** (`/usage-stats/summary`), which
+  is exactly what the Host registers; the previous document-relative form only
+  resolved to it while the page sat at the origin root.
+- New client assertions cover the retry: one retry on a transport failure, none
+  on an HTTP status, and a bounded give-up after the second failure.
+
 ## 2.2.0 — 2026-11-16
 
 A restart no longer re-reads session logs that did not change. Requires DSH

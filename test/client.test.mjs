@@ -15,7 +15,7 @@ if (!source.includes(marker)) throw new Error('probe injection point not found')
 const probed = source
   .replace(
     marker,
-    '    globalThis.__PROBE__ = { UsagePage, UsageIcon, RenderBoundary, SummaryCards, Heatmap, TrendChart, TrendLines, trendTip, monotonePath, ModelPanel, CompositionPanel, CallsPanel, Card, tokenText, countText, percentText, workspaceLabel, csvOf, formatDuration, cacheRateText, dictFor, fill, CSS, IDLE_POLL_MS, SCAN_POLL_MS, tipPosition, weekdayLabelsOf };\n' + marker,
+    '    globalThis.__PROBE__ = { UsagePage, UsageIcon, RenderBoundary, SummaryCards, Heatmap, TrendChart, TrendLines, trendTip, monotonePath, ModelPanel, CompositionPanel, CallsPanel, Card, tokenText, countText, percentText, workspaceLabel, csvOf, formatDuration, cacheRateText, dictFor, fill, CSS, IDLE_POLL_MS, SCAN_POLL_MS, ERROR_RETRY_MS, ROUTE, requestSummary, tipPosition, weekdayLabelsOf };\n' + marker,
   )
   // Test-only: start from a ready payload so the data-dependent branch renders.
   .replace(
@@ -186,6 +186,53 @@ const failures = [];
 const check = (label, condition, detail) => {
   if (!condition) failures.push(`${label}${detail ? `: ${detail}` : ''}`);
 };
+
+// --- request path ----------------------------------------------------------
+
+// Runs before any component mounts: a mounted UsagePage polls on its own
+// schedule, which would make a fetch-call counter meaningless.
+// The Host registers an exact absolute path; the client must address that path.
+check('route is the registered absolute path', probe.ROUTE === '/usage-stats/summary', probe.ROUTE);
+check('a failed request retries sooner than the idle poll', probe.ERROR_RETRY_MS < probe.IDLE_POLL_MS, `${probe.ERROR_RETRY_MS} vs ${probe.IDLE_POLL_MS}`);
+
+const realFetch = globalThis.fetch;
+let attempts = 0;
+// 1. A dead pooled socket (the observed bug) must not reach the user.
+globalThis.fetch = async (url) => {
+  attempts += 1;
+  if (attempts === 1) throw new TypeError('Failed to fetch');
+  return { ok: true, status: 200, json: async () => ({ version: 2, retried: true, url }) };
+};
+const recovered = await probe.requestSummary('range=7');
+const recoveredBody = await recovered.json();
+check('transport failure is retried once', attempts === 2, String(attempts));
+check('the retry returns the real answer', recoveredBody.retried === true, String(recoveredBody.retried));
+check('the retry keeps the query string', String(recoveredBody.url).startsWith('/usage-stats/summary?range=7'), String(recoveredBody.url));
+
+// 2. An HTTP error is an answer, not a transport failure: no retry.
+attempts = 0;
+globalThis.fetch = async () => {
+  attempts += 1;
+  return { ok: false, status: 401, json: async () => ({}) };
+};
+const rejected = await probe.requestSummary('range=7');
+check('an HTTP error is not retried', attempts === 1, String(attempts));
+check('an HTTP error is surfaced as a status', rejected.ok === false && rejected.status === 401, String(rejected.status));
+
+// 3. A persistent transport failure gives up after one retry instead of looping.
+attempts = 0;
+globalThis.fetch = async () => {
+  attempts += 1;
+  throw new TypeError('Failed to fetch');
+};
+let threw = false;
+try {
+  await probe.requestSummary('range=7');
+} catch (cause) {
+  threw = cause instanceof TypeError;
+}
+check('a persistent transport failure gives up', threw && attempts === 2, `threw=${threw} attempts=${attempts}`);
+globalThis.fetch = realFetch;
 
 // --- plugin shape ----------------------------------------------------------
 

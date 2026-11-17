@@ -18,7 +18,14 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
 
     const NS = 'dsh-usage-stats';
-    const ROUTE = 'usage-stats/summary';
+    /**
+     * Absolute pathnames, matching the Host registration exactly.
+     *
+     * The Host registers `path: '/usage-stats/summary'`; a document-relative
+     * `usage-stats/summary` only resolves to it while the page sits at the origin
+     * root, so the absolute form is the one that always agrees with the route.
+     */
+    const ROUTE = '/usage-stats/summary';
     const PANEL_ID = 'usage-stats';
 
     // ---------------------------------------------------------------------
@@ -318,6 +325,36 @@ window.__ModuleLoader__.load({
     /** Idle refresh while the page is visible: keeps the live call window current. */
     const IDLE_POLL_MS = 60 * 1000;
 
+    /** A failed request retries this soon instead of waiting out the idle interval. */
+    const ERROR_RETRY_MS = 3000;
+
+    /** How long a transport-level retry waits before the second attempt. */
+    const TRANSPORT_RETRY_MS = 250;
+
+    /**
+     * Fetch the summary, retrying once when the request never reached the server.
+     *
+     * The Host's HTTP server keeps Node's default five-second keep-alive timeout,
+     * while the browser parks idle connections far longer. Leaving the panel stops
+     * the poll (`visibilitychange`), the pooled socket then dies, and the first
+     * request after coming back can fail as `TypeError: Failed to fetch` without
+     * ever reaching the Host. One immediate retry turns that race into a blip;
+     * an HTTP status error is a real answer and is never retried here.
+     */
+    const requestSummary = async (query) => {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          return await fetch(`${ROUTE}?${query}`, {
+            cache: 'no-store',
+            headers: { accept: 'application/json' },
+          });
+        } catch (cause) {
+          if (attempt >= 1) throw cause;
+          await new Promise((resolve) => setTimeout(resolve, TRANSPORT_RETRY_MS));
+        }
+      }
+    };
+
     function useUsage(initial) {
       const [selection, setSelection] = React.useState(initial);
       const [data, setData] = React.useState(null);
@@ -357,10 +394,7 @@ window.__ModuleLoader__.load({
           first = false;
           forceRef.current = false;
           try {
-            const response = await fetch(`${ROUTE}?${params.toString()}`, {
-              cache: 'no-store',
-              headers: { accept: 'application/json' },
-            });
+            const response = await requestSummary(params.toString());
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const payload = await response.json();
             if (cancelled) return;
@@ -371,7 +405,9 @@ window.__ModuleLoader__.load({
           } catch (cause) {
             if (cancelled) return;
             setError(cause instanceof Error ? cause.message : String(cause));
-            if (visible()) schedule(IDLE_POLL_MS);
+            // Retry soon rather than after a minute: whatever broke the request
+            // (a dropped socket, the Host restarting) is usually gone by then.
+            if (visible()) schedule(ERROR_RETRY_MS);
           }
         };
 
